@@ -1,0 +1,160 @@
+#!/usr/bin/env python
+
+# ubuntu dependencies:
+#  - python-milter
+#  - python-mysqldb
+
+# setup user home
+#  - groupadd sendloopback
+#  - useradd -g sendloopback -d /var/lib/sendloopback -m sendloopback
+# copy config to
+#  - /usr/local/etc/sendloopback.cfg
+# create socket path
+#  - mkdir /var/spool/postfix/var/run/sendloopback
+#  - chown sendloopback:sendloopback /var/spool/postfix/var/run/sendloopback
+
+from os import umask, setuid, setgid, unlink, getpid
+from os.path import isfile
+from pwd import getpwnam
+from grp import getgrnam
+from StringIO import StringIO
+from traceback import format_exc
+from email import message_from_file
+from smtplib import LMTP
+from syslog import openlog, syslog, closelog, LOG_MAIL, LOG_ERR
+from ConfigParser import SafeConfigParser
+import Milter
+from Milter.utils import parse_addr
+from MySQLdb import connect as mysql_connect
+
+config = SafeConfigParser()
+conn = None
+
+class LoopbackMilter(Milter.Base):
+    "Mail Filter to duplicate mail sent by the MTA and loop it back to the MDA"
+
+    def __init__(self):
+        # A new instance with each new connection.
+        self.user = None
+        self.canon_from = None
+        self.content = StringIO()
+        self.headers = {}
+
+    def envfrom(self, mailfrom, *args):
+        self.user = self.getsymval('{auth_authen}') # authenticated user
+        self.canon_from = '@'.join(parse_addr(mailfrom))
+        return Milter.CONTINUE
+
+    @Milter.noreply
+    def header(self, name, hval):
+        self.headers.setdefault(name, []).append(hval)
+        self.content.write("{}: {}\n".format(name, hval)) # add header to buffer
+        return Milter.CONTINUE
+
+    @Milter.noreply
+    def eoh(self):
+        self.content.write("\n") # terminate headers
+        return Milter.CONTINUE
+
+    @Milter.noreply
+    def body(self, chunk):
+        self.content.write(chunk)
+        return Milter.CONTINUE
+
+    def eom(self):
+        try:
+            self.content.seek(0)
+            msg = message_from_file(self.content)
+
+            msg_id_list = self.headers.get("Message-ID")
+            msg_id = msg_id_list[0] if msg_id_list else None
+
+            hdr = config.get("loopback", "header")
+
+            if self.user:
+                # authenticated sending
+                cur = conn.cursor()
+
+                cur.execute(config.get("mysql", "query"), (self.user,))
+                loopback_addr = [row[0] for row in cur.fetchall() if row[0]]
+                query_ret = cur.fetchone()
+                conn.commit()
+
+                self.log("adding header: message-id={}, user={}, loopback={}".format(msg_id, self.user, loopback_addr))
+
+                if loopback_addr:
+                    msg[hdr] = "Yes"
+                    raw = msg.as_string()
+                    lmtp = LMTP(config.get("lmtp", "socket"))
+                    for email in loopback_addr:
+                        lmtp.sendmail(self.canon_from, email, raw)
+                    lmtp.quit()
+
+                    self.log("done: message-id={}".format(msg_id))
+            else:
+                # unauthenticated incoming
+                self.log("checking header: user={}, message-id={}".format(self.user, msg_id))
+                for i in range(1, len(self.headers.get(hdr, [])) + 1):
+                    # remove header
+                    self.chgheader(hdr, i, None)
+        except Exception:
+            for line in format_exc().split("\n"):
+                self.log(line)
+
+        return Milter.ACCEPT
+
+    def log(self, *msg):
+        syslog(" ".join(msg))
+
+def main():
+    "the main function that sets up the entire system"
+
+    global conn
+
+    config.read("/usr/local/etc/sendloopback.cfg")
+
+    openlog(ident="send-loopback",
+            facility=LOG_MAIL)
+
+    pidfile = config.get("loopback", "pidfile")
+
+    if isfile(pidfile):
+        syslog(LOG_ERR, "PID file already exists")
+        exit(1)
+
+    try:
+        syslog("milter startup")
+
+        Milter.factory = LoopbackMilter
+
+        # tell the MTA which features we use
+        Milter.set_flags(Milter.CHGHDRS | Milter.ADDHDRS)
+
+        conn = mysql_connect(user=config.get("mysql", "user"),
+                             passwd=config.get("mysql", "password"),
+                             host=config.get("mysql", "host"),
+                             db=config.get("mysql", "database"))
+
+        setgid(getgrnam(config.get("loopback", "group")).gr_gid)
+        setuid(getpwnam(config.get("loopback", "user")).pw_uid)
+
+        umask(0o137)
+        with open(pidfile, "w") as pidfd:
+            pidfd.write(str(getpid()))
+
+        umask(config.getint("loopback", "umask"))
+
+        Milter.runmilter("send-loopback",
+                         config.get("milter", "socket"),
+                         config.getint("milter", "timeout"))
+
+        conn.close()
+
+        syslog("milter shutdown")
+
+        closelog()
+    finally:
+        unlink(pidfile)
+
+if __name__ == "__main__":
+    main()

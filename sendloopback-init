@@ -1,0 +1,39 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          sendloopback
+# Required-Start:    $local_fs $network $named $time $syslog
+# Required-Stop:     $local_fs $network $named $time $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Description:       Milter\ for\ looping\ back\ sent\ mails
+### END INIT INFO
+
+PATH="/sbin:/usr/sbin:/bin:/usr/bin"
+NAME="sendloopback"
+DAEMON="/usr/local/bin/$NAME"
+PIDFILE="/var/lib/${NAME}/${NAME}.pid"
+
+do_start() {
+	start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --test > /dev/null || return 1
+	start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --background || return 2
+}
+
+do_stop() {
+	start-stop-daemon --stop --quiet --pidfile $PIDFILE --signal 2
+}
+
+case "$1" in
+	start)
+		do_start
+	;;
+	stop)
+		do_stop
+	;;
+	restart)
+		do_stop
+		sleep 10
+		do_start
+	;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+esac

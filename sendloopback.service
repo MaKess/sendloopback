@@ -1,0 +1,11 @@
+[Unit]
+Description=Milter for looping back sent mails
+After=multi-user.target
+
+[Service]
+Type=idle
+ExecStart=/usr/local/bin/sendloopback
+WorkingDirectory=/var/lib/sendloopback
+
+[Install]
+WantedBy=multi-user.target
