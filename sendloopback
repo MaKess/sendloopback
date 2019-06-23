@@ -90,14 +90,14 @@ class LoopbackMilter(Milter.Base):
                     for email in loopback_addr:
                         lmtp.sendmail(self.canon_from, email, raw)
                     lmtp.quit()
-
-                    self.log("done: message-id={}".format(msg_id))
             else:
                 # unauthenticated incoming
                 self.log("checking header: user={}, message-id={}".format(self.user, msg_id))
                 for i in range(1, len(self.headers.get(hdr, [])) + 1):
                     # remove header
                     self.chgheader(hdr, i, None)
+
+            self.log("done: message-id={}".format(msg_id))
         except Exception:
             for line in format_exc().split("\n"):
                 self.log(line)
