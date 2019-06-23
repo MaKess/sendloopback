@@ -24,6 +24,7 @@ from smtplib import LMTP
 from syslog import openlog, syslog, closelog, LOG_MAIL, LOG_ERR
 from ConfigParser import SafeConfigParser
 import Milter
+from Milter import noreply, CONTINUE, ACCEPT, CHGHDRS, ADDHDRS # pylint: disable=no-name-in-module
 from Milter.utils import parse_addr
 from MySQLdb import connect as mysql_connect
 
@@ -43,23 +44,23 @@ class LoopbackMilter(Milter.Base):
     def envfrom(self, mailfrom, *args):
         self.user = self.getsymval('{auth_authen}') # authenticated user
         self.canon_from = '@'.join(parse_addr(mailfrom))
-        return Milter.CONTINUE
+        return CONTINUE
 
-    @Milter.noreply
+    @noreply
     def header(self, name, hval):
         self.headers.setdefault(name, []).append(hval)
         self.content.write("{}: {}\n".format(name, hval)) # add header to buffer
-        return Milter.CONTINUE
+        return CONTINUE
 
-    @Milter.noreply
+    @noreply
     def eoh(self):
         self.content.write("\n") # terminate headers
-        return Milter.CONTINUE
+        return CONTINUE
 
-    @Milter.noreply
+    @noreply
     def body(self, chunk):
         self.content.write(chunk)
-        return Milter.CONTINUE
+        return CONTINUE
 
     def eom(self):
         try:
@@ -101,7 +102,7 @@ class LoopbackMilter(Milter.Base):
             for line in format_exc().split("\n"):
                 self.log(line)
 
-        return Milter.ACCEPT
+        return ACCEPT
 
     def log(self, *msg):
         syslog(" ".join(msg))
@@ -128,7 +129,7 @@ def main():
         Milter.factory = LoopbackMilter
 
         # tell the MTA which features we use
-        Milter.set_flags(Milter.CHGHDRS | Milter.ADDHDRS)
+        Milter.set_flags(CHGHDRS | ADDHDRS)
 
         conn = mysql_connect(user=config.get("mysql", "user"),
                              passwd=config.get("mysql", "password"),
