@@ -27,9 +27,11 @@ import Milter
 from Milter import noreply, CONTINUE, ACCEPT, CHGHDRS, ADDHDRS # pylint: disable=no-name-in-module
 from Milter.utils import parse_addr
 from MySQLdb import connect as mysql_connect
+from threading import Lock
 
 config = SafeConfigParser()
 conn = None
+conn_lock = Lock()
 
 class LoopbackMilter(Milter.Base):
     "Mail Filter to duplicate mail sent by the MTA and loop it back to the MDA"
@@ -74,12 +76,15 @@ class LoopbackMilter(Milter.Base):
 
             if self.user:
                 # authenticated sending
-                cur = conn.cursor()
+                with conn_lock:
+                    # check if the connection is still alive and reconnect if not
+                    conn.ping(True)
 
-                cur.execute(config.get("mysql", "query"), (self.user,))
-                loopback_addr = [row[0] for row in cur.fetchall() if row[0]]
-                query_ret = cur.fetchone()
-                conn.commit()
+                    # check all the loopbacks for this user
+                    cur = conn.cursor()
+                    cur.execute(config.get("mysql", "query"), (self.user,))
+                    loopback_addr = [addr for addr, in cur.fetchall() if addr]
+                    conn.commit()
 
                 self.log("adding header: message-id={}, user={}, loopback={}".format(msg_id, self.user, loopback_addr))
 
